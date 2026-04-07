@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S3 Verified Intelligence | Grounded AI Oracle</title>
+    
+    <!-- Premium Typography: Outfit for headers, Inter for copy -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Phosphor Icons for a modern symbol system -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    
+    <!-- Marked.js for rendering markdown output from Claude -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    
+    <!-- Custom Style System -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    
+    <!-- Highlight.js for code block beauty if any code is generated -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body>
+
+    <!-- Gradient Ambient Background Elements -->
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+
+    <div class="layout-wrapper">
+        <header>
+            <div class="brand">
+                <div class="icon-orb">
+                    <i class="ph-fill ph-shield-check"></i>
+                </div>
+                <div class="brand-text">
+                    <h1>S3 Oracle</h1>
+                    <div class="status-indicator">
+                        <span class="pulse"></span>
+                        <span>Connected to Bedrock KB</span>
+                    </div>
+                </div>
+            </div>
+            <p class="subtitle">Securely grounding AI responses in your private S3 documents using RAG architecture.</p>
+        </header>
+
+        <main class="chat-viewport">
+            <div id="chat-history">
+                <!-- Welcome Message Card -->
+                <div class="message-card bot">
+                    <div class="avatar"><i class="ph-bold ph-robot"></i></div>
+                    <div class="content">
+                        <div class="bubble">
+                            <p>Greetings. I am your <strong>Verified Intelligence Assistant</strong>.</p>
+                            <p>I have been cross-referenced with your proprietary data clusters in Amazon S3. How can I assist your discovery today?</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Contextual Loader -->
+            <div id="thinking" class="thinking-state" style="display: none;">
+                <div class="thinking-bubble">
+                    <div class="dot-stream">
+                        <div class="dot"></div>
+                        <div class="dot"></div>
+                        <div class="dot"></div>
+                    </div>
+                    <span>Consulting Knowledge Base...</span>
+                </div>
+            </div>
+        </main>
+
+        <section class="input-nexus">
+            <div class="input-container">
+                <div class="input-shroud">
+                    <input type="text" id="query-input" placeholder="Query your documented intelligence..." autofocus autocomplete="off">
+                    <button id="submit-btn" class="send-action">
+                        <i class="ph-fill ph-paper-plane-right"></i>
+                    </button>
+                </div>
+            </div>
+            <footer class="legal-footer">
+                <p>Powered by Amazon Bedrock & Claude 3 Haiku • Zero-Server RAG Architecture</p>
+            </footer>
+        </section>
+    </div>
+
+    <script>
+        // Configure Marked options
+        marked.setOptions({
+            highlight: function(code, lang) {
+                const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+                return hljs.highlight(code, { language }).value;
+            },
+            breaks: true,
+            gfm: true
+        });
+
+        const chatHistory = document.getElementById('chat-history');
+        const queryInput = document.getElementById('query-input');
+        const submitBtn = document.getElementById('submit-btn');
+        const thinkingIndicator = document.getElementById('thinking');
+
+        async function processQuery() {
+            const query = queryInput.value.trim();
+            if (!query) return;
+
+            // 1. Clear input & Add User Message UI
+            queryInput.value = '';
+            appendMessage(query, 'user');
+
+            // 2. Activate Thinking State
+            thinkingIndicator.style.display = 'flex';
+            scrollToBottom();
+
+            try {
+                // 3. Network Request to Flask Endpoint
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    appendMessage(`**Error Encountered:** ${data.error}`, 'bot', [], true);
+                } else {
+                    appendMessage(data.answer, 'bot', data.citations);
+                }
+            } catch (err) {
+                appendMessage("Network failure. Could not reach the intelligence gateway.", 'bot', [], true);
+            } finally {
+                thinkingIndicator.style.display = 'none';
+                scrollToBottom();
+            }
+        }
+
+        function appendMessage(text, role, citations = [], isError = false) {
+            const card = document.createElement('div');
+            card.className = `message-card ${role} ${isError ? 'error' : ''}`;
+            
+            const avatarHtml = role === 'bot' 
+                ? '<div class="avatar"><i class="ph-bold ph-robot"></i></div>' 
+                : '<div class="avatar user-avatar"><i class="ph-bold ph-user"></i></div>';
+
+            const renderedContent = role === 'bot' ? marked.parse(text) : text;
+            
+            let citationHtml = '';
+            if (citations && citations.length > 0) {
+                citationHtml = `
+                    <div class="citation-metadata">
+                        <div class="citation-header">
+                            <i class="ph-bold ph-bookmarks-simple"></i> VERIFIED SOURCES
+                        </div>
+                        <div class="badge-row">
+                            ${citations.map((c, i) => {
+                                const fname = c.location.split('/').pop().replace(/%20/g, ' ') || 'Document';
+                                return `<span class="source-badge" title="${c.location}">[${i+1}] ${fname}</span>`;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            card.innerHTML = `
+                ${avatarHtml}
+                <div class="content">
+                    <div class="bubble">${renderedContent}</div>
+                    ${citationHtml}
+                </div>
+            `;
+            
+            chatHistory.appendChild(card);
+            scrollToBottom();
+        }
+
+        function scrollToBottom() {
+            window.scrollTo({
+                top: document.body.scrollHeight,
+                behavior: 'smooth'
+            });
+            // Also scroll the chat container if needed
+            const scrollTarget = document.querySelector('main');
+            scrollTarget.scrollTop = scrollTarget.scrollHeight;
+        }
+
+        submitBtn.addEventListener('click', processQuery);
+        queryInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') processQuery();
+        });
+    </script>
+</body>
+</html>
