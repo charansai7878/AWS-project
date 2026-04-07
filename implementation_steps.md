@@ -59,29 +59,45 @@ This step replaces the expensive OpenSearch Serverless with **Pinecone Serverles
 ## 💻 Step 3: Application Development (Local Flask Engine)
 With the Pinecone + Bedrock integration complete, we develop the local logic to query the verified knowledge.
 
-*   **Credential Management**: Update your `.env` file with the `KNOWLEDGE_BASE_ID` found in the AWS Bedrock Console.
-*   **Backend Engineering**: We write `app_gui.py` using `boto3` to communicate with the Bedrock Agent Runtime, which now handles the Pinecone retrieval automatically.
-*   **Secure Execution**: Ensure your **AWS Access Keys** in `.env` have permissions for both `bedrock-agent-runtime` and `secretsmanager`.
+1.  **Credential Management**: Updated `.env` file with `KNOWLEDGE_BASE_ID` and `MODEL_ARN`.
+2.  **Backend Engineering**: Developed `app_gui.py` using `boto3`. 
+    - *Optimization*: Implemented a manual "Retrieve + Converse" flow in `app_gui.py` to bypass Bedrock orchestration bugs and ensure stable responses.
+3.  **Secure Execution**: Configured `boto3` clients for `bedrock-agent-runtime` and `bedrock-runtime`.
 
 ---
 
 ## 🌐 Step 4: Premium Web UI Implementation
 The final coding phase creates the high-end interface for the grounded assistant.
 
-*   **Aesthetics**: Using modern CSS in `style.css` to create a premium, glassmorphic dark-mode UI.
-*   **Markdown Support**: Integrating `marked.js` to render the assistant's grounded answers with rich text formatting (bolding, lists, and code blocks).
-*   **Engagement**: Implementing a responsive chat window with interactive "Verified Sources" badges and smooth entrance animations.
+1.  **Aesthetics**: Glassmorphic dark-mode UI implemented in `static/style.css`.
+2.  **Markdown Support**: Integrated `marked.js` in `templates/index.html` for rich text formatting.
+3.  **Source Tracking**: Added a "Verified Sources" section to display citations for transparency.
 
 ---
 
-## 🚀 Step 5: Final Testing & Cost Audit
-The system is now fully live and optimized for low-cost operations.
+## 📦 Step 5: Version Control & GitHub Integration (NEW - COMPLETED)
+Moving from local development to a professional codebase management workflow.
 
-*   **Functionality Test**: Ask complex questions about your private S3 documents and verify that the citations correctly point back to the source objects in your bucket.
-*   **Pinecone Audit**: Log in to the Pinecone Console to see your **Usage Metrics**. You should see very low (or zero) cost for idle storage.
-*   **Bedrock Consistency**: Use the Bedrock Console's "Test" interface to verify that it is correctly pulling the data from the Pinecone index.
+1.  **Git Initialization**: Ran `git init` and created a `.gitignore` to protect sensitive `.env` files and cache directories.
+2.  **Initial Commit**: Committed all project files (`app_gui.py`, CSS/HTML templates, etc.) locally.
+3.  **GitHub Push**: Linked the local repository to [charansai7878/AWS-project](https://github.com/charansai7878/AWS-project) and pushed the `main` branch.
 
 ---
 
-## 📈 Summary of Success
-The application is now fully functional and provides a premium user experience with **verified intelligence**. Every answer is cross-referenced with your private S3 data clusters, ensuring 100% accuracy and trust.
+## 🚀 Step 6: EC2 Deployment Preparation (Next Step)
+The system is ready to move from local hosting to the AWS Cloud.
+
+1.  **EC2 Instance Setup**: Launch an Ubuntu/Amazon Linux instance.
+2.  **IAM Role Configuration**: 
+    - Create an IAM Role for EC2.
+    - Attach a policy allowing `bedrock:Retrieve` and `bedrock:Converse`.
+    - *Security*: This replaces hardcoded Access Keys on the server.
+3.  **Production Hardening**:
+    - Update code to use IAM instance profiles (removing dependency on `.env` keys).
+    - Setting up a production server like `Gunicorn` and `Nginx` (optional).
+
+---
+
+## 📈 Project Status: Ready for Deployment
+The application is fully functional locally and the code is safely stored on GitHub. The next phase is final cloud deployment on EC2 using secure IAM roles.
+
