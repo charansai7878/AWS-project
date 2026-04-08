@@ -13,63 +13,67 @@ app = Flask(__name__)
 KNOWLEDGE_BASE_ID = os.getenv("KNOWLEDGE_BASE_ID", "YOUR_KB_ID")
 MODEL_ARN = os.getenv("MODEL_ARN", "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0")
 
+import time
+from botocore.exceptions import ClientError
+
 def query_knowledge_base(query):
     """
-    Dynamic Authentication:
-    1. If Local keys (AWS_ACCESS_KEY_ID) exist in .env, use them.
-    2. Otherwise, fall back to the EC2 IAM Role automatically.
+    Dynamic Authentication with Exponential Backoff retry logic to handle Throttling.
     """
     aws_key = os.getenv("AWS_ACCESS_KEY_ID")
     aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY")
     
     if aws_key and aws_secret:
-        # Running LOCALLY with .env keys
         kb_client = boto3.client("bedrock-agent-runtime", region_name="us-east-1", aws_access_key_id=aws_key, aws_secret_access_key=aws_secret)
         br_client = boto3.client("bedrock-runtime", region_name="us-east-1", aws_access_key_id=aws_key, aws_secret_access_key=aws_secret)
     else:
-        # Running on EC2 with IAM Role
         kb_client = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
         br_client = boto3.client("bedrock-runtime", region_name="us-east-1")
-    
-    # 1. Manually pull the text straight from Pinecone
-    retrieval_resp = kb_client.retrieve(
-        knowledgeBaseId=KNOWLEDGE_BASE_ID,
-        retrievalQuery={'text': query},
-        retrievalConfiguration={'vectorSearchConfiguration': {'numberOfResults': 3}}
-    )
-    
-    results = retrieval_resp.get('retrievalResults', [])
-    if not results:
-        return {'output': {'text': 'Sorry, I am unable to assist you with this request. No matching context found in S3.'}, 'citations': []}
-        
-    context_texts = []
-    citations_data = [] # Formatting them identically so the HTML doesn't break
-    for r in results:
-        snippet = r.get('content', {}).get('text', '')
-        uri = r.get('location', {}).get('s3Location', {}).get('uri', 'Unknown Source')
-        context_texts.append(snippet)
-        citations_data.append({'retrievedReferences': [{'location': {'s3Location': {'uri': uri}}, 'content': {'text': snippet}}]})
-        
-    context_string = "\n\n".join(context_texts)
-    
-    # Clean the MODEL_ARN (Converse API strictly needs just the short model_id)
-    model_id = MODEL_ARN.split('/')[-1] if '/' in MODEL_ARN else MODEL_ARN
-    
-    # 2. Formulate a pure prompt pushing Context directly to the API
-    user_prompt = f"Using ONLY the following verified context from the database, answer the user's question clearly.\n\n[CONTEXT]:\n{context_string}\n\n[QUESTION]: {query}"
-    
-    # 3. Request Nova Lite to just answer (Bypasses the buggy RAG orchestration!)
-    converse_resp = br_client.converse(
-        modelId=model_id,
-        messages=[{"role": "user", "content": [{"text": user_prompt}]}]
-    )
-    
-    answer_text = converse_resp['output']['message']['content'][0]['text']
-    
-    return {
-        'output': {'text': answer_text},
-        'citations': citations_data
-    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # 1. Manually pull the text straight from Pinecone
+            retrieval_resp = kb_client.retrieve(
+                knowledgeBaseId=KNOWLEDGE_BASE_ID,
+                retrievalQuery={'text': query},
+                retrievalConfiguration={'vectorSearchConfiguration': {'numberOfResults': 3}}
+            )
+            
+            results = retrieval_resp.get('retrievalResults', [])
+            if not results:
+                return {'output': {'text': 'Sorry, I am unable to assist you with this request. No matching context found in S3.'}, 'citations': []}
+                
+            context_texts = []
+            citations_data = []
+            for r in results:
+                snippet = r.get('content', {}).get('text', '')
+                uri = r.get('location', {}).get('s3Location', {}).get('uri', 'Unknown Source')
+                context_texts.append(snippet)
+                citations_data.append({'retrievedReferences': [{'location': {'s3Location': {'uri': uri}}, 'content': {'text': snippet}}]})
+                
+            context_string = "\n\n".join(context_texts)
+            model_id = MODEL_ARN.split('/')[-1] if '/' in MODEL_ARN else MODEL_ARN
+            user_prompt = f"Using ONLY the following verified context from the database, answer the user's question clearly.\n\n[CONTEXT]:\n{context_string}\n\n[QUESTION]: {query}"
+            
+            # 3. Request model to answer
+            converse_resp = br_client.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": user_prompt}]}]
+            )
+            
+            answer_text = converse_resp['output']['message']['content'][0]['text']
+            
+            return {
+                'output': {'text': answer_text},
+                'citations': citations_data
+            }
+
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ThrottlingException' and attempt < max_retries - 1:
+                time.sleep(2 ** attempt) # Wait 1s, then 2s, then 4s
+                continue
+            raise e
 
 @app.route("/")
 def index():
