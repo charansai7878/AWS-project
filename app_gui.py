@@ -15,16 +15,21 @@ MODEL_ARN = os.getenv("MODEL_ARN", "arn:aws:bedrock:us-east-1::foundation-model/
 
 def query_knowledge_base(query):
     """
-    Calls Bedrock manual Retrieve + Converse to completely bypass the AWS 'leaking action' bug!
+    Dynamic Authentication:
+    1. If Local keys (AWS_ACCESS_KEY_ID) exist in .env, use them.
+    2. Otherwise, fall back to the EC2 IAM Role automatically.
     """
     aws_key = os.getenv("AWS_ACCESS_KEY_ID")
     aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY")
     
-    if not aws_key or not aws_secret:
-        raise Exception("Python literally cannot see the keys in the .env file. Please check spelling!")
-        
-    kb_client = boto3.client("bedrock-agent-runtime", region_name="us-east-1", aws_access_key_id=aws_key, aws_secret_access_key=aws_secret)
-    br_client = boto3.client("bedrock-runtime", region_name="us-east-1", aws_access_key_id=aws_key, aws_secret_access_key=aws_secret)
+    if aws_key and aws_secret:
+        # Running LOCALLY with .env keys
+        kb_client = boto3.client("bedrock-agent-runtime", region_name="us-east-1", aws_access_key_id=aws_key, aws_secret_access_key=aws_secret)
+        br_client = boto3.client("bedrock-runtime", region_name="us-east-1", aws_access_key_id=aws_key, aws_secret_access_key=aws_secret)
+    else:
+        # Running on EC2 with IAM Role
+        kb_client = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
+        br_client = boto3.client("bedrock-runtime", region_name="us-east-1")
     
     # 1. Manually pull the text straight from Pinecone
     retrieval_resp = kb_client.retrieve(
