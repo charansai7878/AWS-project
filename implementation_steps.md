@@ -87,17 +87,76 @@ Moving from local development to a professional codebase management workflow.
 ## 🚀 Step 6: EC2 Deployment Preparation (Next Step)
 The system is ready to move from local hosting to the AWS Cloud.
 
-1.  **EC2 Instance Setup**: Launch an Ubuntu/Amazon Linux instance.
+1.  **EC2 Instance Setup**: 
+    - Launch an **Ubuntu 22.04 LTS** instance.
+    - **Security Group**: Allow **HTTP (80)** and **Custom TCP (5000)** for Flask.
+    - **User Data Script**: Paste this into the "Advanced Details" section during launch:
+      ```bash
+      #!/bin/bash
+      # Update and install dependencies
+      apt-get update -y
+      apt-get install python3-pip python3-venv git -y
+      
+      # Clone repository
+      cd /home/ubuntu
+      git clone https://github.com/charansai7878/AWS-project.git
+      cd AWS-project
+      
+      # Setup Virtual Environment
+      python3 -m venv venv
+      source venv/bin/activate
+      pip install -r requirements.txt
+      
+      # Start the app
+      nohup python3 app_gui.py > log.txt 2>&1 &
+      ```
 2.  **IAM Role Configuration**: 
-    - Create an IAM Role for EC2.
-    - Attach a policy allowing `bedrock:Retrieve` and `bedrock:Converse`.
-    - *Security*: This replaces hardcoded Access Keys on the server.
+    - **A. Create IAM Policy**:
+        - Go to **IAM Console > Policies > Create policy**.
+        - Use the **JSON** editor and paste the policy:
+          ```json
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "BedrockKnowledgeBaseAccess",
+                        "Effect": "Allow",
+                        "Action": ["bedrock:Retrieve"],
+                        "Resource": "arn:aws:bedrock:us-east-1:*:knowledge-base/*"
+                    },
+                    {
+                        "Sid": "BedrockModelInvocation",
+                        "Effect": "Allow",
+                        "Action": [
+                            "bedrock:InvokeModel",
+                            "bedrock:InvokeModelWithResponseStream"
+                        ],
+                        "Resource": "arn:aws:bedrock:us-east-1::foundation-model/*"
+                    }
+                ]
+            }
+          ```
+        - Name it `EC2-Bedrock-Policy`.
+    - **B. Create IAM Role**:
+        - Go to **IAM Console > Roles > Create role**.
+        - Select **AWS Service** and **EC2** as the use case.
+        - Attach the `EC2-Bedrock-Policy` created in the previous step.
+        - Name the role `EC2-Bedrock-Assistant-Role`.
+    - **C. Attach to Instance**:
+        - In the **EC2 Console**, select your instance.
+        - Go to **Actions > Security > Modify IAM role**.
+        - Select `EC2-Bedrock-Assistant-Role` and save.
+    - *Security Benefit*: This allows the application to authenticate automatically without storing secret keys on the server.
 3.  **Production Hardening**:
-    - Update code to use IAM instance profiles (removing dependency on `.env` keys).
-    - Setting up a production server like `Gunicorn` and `Nginx` (optional).
+    - **Environment Variables**: Create a `.env` file on the server (manually or via User Data) containing only:
+      ```bash
+      KNOWLEDGE_BASE_ID=your_id_here
+      MODEL_ARN=arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0
+      ```
+    - **Update Authentication**: In `app_gui.py`, ensure the `boto3.client` calls do *not* have `aws_access_key_id` or `aws_secret_access_key` parameters. Boto3 will automatically use the IAM Instance Profile.
+    - **Gunicorn (Optional)**: For stability, run with `gunicorn -w 4 -b 0.0.0.0:5000 app_gui:app`.
 
 ---
 
 ## 📈 Project Status: Ready for Deployment
-The application is fully functional locally and the code is safely stored on GitHub. The next phase is final cloud deployment on EC2 using secure IAM roles.
-
+The application is fully functional locally and the code is safely stored on GitHub. The final cloud deployment on EC2 using secure IAM roles is the current focus.
