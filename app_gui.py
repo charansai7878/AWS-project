@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 import boto3
 import os
+import random
 from dotenv import load_dotenv
 
 # Ensure we always find the .env file in the same directory as this script
@@ -30,7 +31,7 @@ def query_knowledge_base(query):
         kb_client = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
         br_client = boto3.client("bedrock-runtime", region_name="us-east-1")
 
-    max_retries = 3
+    max_retries = 6  # Increased from 3
     for attempt in range(max_retries):
         try:
             # 1. Manually pull the text straight from Pinecone
@@ -70,8 +71,10 @@ def query_knowledge_base(query):
             }
 
         except ClientError as e:
-            if e.response['Error']['Code'] == 'ThrottlingException' and attempt < max_retries - 1:
-                time.sleep(2 ** attempt) # Wait 1s, then 2s, then 4s
+            error_code = e.response['Error']['Code']
+            if error_code == 'ThrottlingException' and attempt < max_retries - 1:
+                wait_time = (2 ** attempt) + random.uniform(0, 1)  # jitter prevents synchronized retries
+                time.sleep(wait_time) 
                 continue
             raise e
 
