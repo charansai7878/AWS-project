@@ -3,8 +3,10 @@ import boto3
 import os
 import time
 import random
+import threading
 from dotenv import load_dotenv
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 # Ensure we always find the .env file in the same directory as this script
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -12,47 +14,77 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 app = Flask(__name__)
 
-# Use environment variables if available, otherwise fallback
 KNOWLEDGE_BASE_ID = os.getenv("KNOWLEDGE_BASE_ID", "YOUR_KB_ID")
 MODEL_ARN = os.getenv("MODEL_ARN", "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0")
 
-# FIX 1: Create boto3 clients ONCE at startup, not on every request
-# This uses the EC2 IAM Role automatically (no hardcoded keys needed)
-# IAM Instance Profile credentials have higher rate limits than hardcoded keys
-kb_client = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
-br_client = boto3.client("bedrock-runtime", region_name="us-east-1")
+# FIX 1: Override botocore's built-in retry so IT doesn't exhaust retries
+# before your Python code can handle the ThrottlingException.
+# mode="standard" uses exponential backoff; max_attempts=1 means botocore
+# will NOT retry at all — your Python loop handles all retries instead.
+bedrock_config = Config(
+    region_name="us-east-1",
+    retries={"max_attempts": 1, "mode": "standard"}
+)
 
-# FIX 2: Simple in-memory cache to avoid repeat API calls for same questions
+kb_client = boto3.client("bedrock-agent-runtime", config=bedrock_config)
+br_client = boto3.client("bedrock-runtime", config=bedrock_config)
+
+# In-memory cache to avoid repeat API calls for same questions
 answer_cache = {}
+
+# FIX 2: Simple token-bucket rate limiter — ensures at most 1 Retrieve
+# call per second (Bedrock free-tier limit). Uses a threading.Lock so it
+# works correctly even if Flask runs with multiple threads.
+_rate_lock = threading.Lock()
+_last_request_time = 0.0
+MIN_REQUEST_INTERVAL = 1.2  # seconds between Retrieve calls (slightly above 1 req/s)
+
+def _rate_limit_wait():
+    """Block until it's safe to make the next Retrieve call."""
+    global _last_request_time
+    with _rate_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_time
+        if elapsed < MIN_REQUEST_INTERVAL:
+            time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+        _last_request_time = time.monotonic()
+
 
 def query_knowledge_base(query):
     """
     Queries Bedrock Knowledge Base with:
-    - Cached responses for repeated questions
-    - Exponential backoff with jitter for throttling
+    - In-memory cache for repeated questions
+    - Rate limiter (max 1 req/s) to prevent throttling before it starts
+    - Exponential backoff handled entirely in Python (botocore retries disabled)
     """
-
-    # FIX 3: Return cached answer if same question was asked before
     cache_key = query.lower().strip()
     if cache_key in answer_cache:
         print(f"[CACHE HIT] Returning cached answer for: {query}")
         return answer_cache[cache_key]
 
-    # FIX 4: More retries with longer waits + random jitter
-    max_retries = 6
+    # FIX 3: Longer waits, more attempts, larger jitter window
+    # Waits (approx): 5s, 10s, 20s, 40s, 80s
+    max_retries = 5
     for attempt in range(max_retries):
         try:
+            # Apply rate limit before every Retrieve call
+            _rate_limit_wait()
+
             # Step 1: Retrieve context from Pinecone via Bedrock Knowledge Base
             retrieval_resp = kb_client.retrieve(
                 knowledgeBaseId=KNOWLEDGE_BASE_ID,
                 retrievalQuery={'text': query},
-                retrievalConfiguration={'vectorSearchConfiguration': {'numberOfResults': 3}}
+                retrievalConfiguration={
+                    'vectorSearchConfiguration': {'numberOfResults': 3}
+                }
             )
 
             results = retrieval_resp.get('retrievalResults', [])
             if not results:
                 return {
-                    'output': {'text': 'Sorry, I am unable to assist you with this request. No matching context found in S3.'},
+                    'output': {
+                        'text': 'Sorry, I am unable to assist you with this request. No matching context found in S3.'
+                    },
                     'citations': []
                 }
 
@@ -91,19 +123,41 @@ def query_knowledge_base(query):
                 'citations': citations_data
             }
 
-            # Save to cache before returning
             answer_cache[cache_key] = result
             return result
 
         except ClientError as e:
             error_code = e.response['Error']['Code']
-            if error_code == 'ThrottlingException' and attempt < max_retries - 1:
-                # FIX 5: Longer waits with random jitter to prevent retry storms
-                # Waits: ~2s, ~4s, ~8s, ~16s, ~32s
-                wait_time = (2 ** (attempt + 1)) + random.uniform(0, 2)
-                print(f"[THROTTLED] Attempt {attempt + 1}/{max_retries}. Waiting {wait_time:.1f}s before retry...")
-                time.sleep(wait_time)
-                continue
+
+            if error_code == 'ThrottlingException':
+                if attempt < max_retries - 1:
+                    # FIX 4: Start at ~5s, double each retry, add large random jitter
+                    # to desynchronize concurrent requests (avoids retry storms)
+                    base_wait = 5 * (2 ** attempt)           # 5, 10, 20, 40 seconds
+                    jitter     = random.uniform(1.0, 5.0)    # 1–5s of jitter
+                    wait_time  = base_wait + jitter
+                    print(
+                        f"[THROTTLED] Attempt {attempt + 1}/{max_retries}. "
+                        f"Waiting {wait_time:.1f}s before retry..."
+                    )
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # All retries exhausted — return a friendly message instead of crashing
+                    print(f"[THROTTLED] All {max_retries} retries exhausted.")
+                    return {
+                        'output': {
+                            'text': (
+                                "**⚠️ AWS Rate Limit Reached**\n\n"
+                                "Bedrock is temporarily throttling requests. "
+                                "Please wait 30–60 seconds and try again. "
+                                "This is a free-tier quota limit, not a code error."
+                            )
+                        },
+                        'citations': []
+                    }
+
+            # Re-raise any other AWS errors (auth, config, etc.)
             raise e
 
 
@@ -121,18 +175,21 @@ def ask():
 
     try:
         response = query_knowledge_base(query)
-
         output_text = response.get('output', {}).get('text', 'No answer found.')
 
         # Intercept AWS Bedrock's default Guardrail rejection
         if "Sorry, I am unable to assist" in output_text:
             output_text = (
                 "**⚠️ AWS Bedrock Guardrail Triggered:**\n\n"
-                "The AI model is working perfectly and connected successfully! However, Bedrock securely blocked it from answering because it could not find any relevant information in your Pinecone Database. "
-                "This happens for two reasons:\n\n"
-                "1. **Empty Database:** You have not clicked the orange **Sync** button in the AWS Bedrock Console yet, so your Pinecone database is physically empty.\n"
-                "2. **Off-Topic Question:** You asked a question (like 'Hello') that does not match the text inside the PDFs you uploaded. Because this is a strict Knowledge Base, it is programmed to refuse to answer anything that isn't in your files!\n\n"
-                "*Fix: Go click 'Sync' in the AWS Console, wait for it to finish, and ask a question directly related to your documents!*"
+                "The AI model is working and connected! However, Bedrock blocked the response "
+                "because no relevant content was found in your Pinecone database.\n\n"
+                "**Two possible causes:**\n\n"
+                "1. **Empty database:** You haven't clicked the orange **Sync** button in the "
+                "AWS Bedrock Console yet — so Pinecone has no vectors to search.\n"
+                "2. **Off-topic question:** Your question doesn't match anything in the uploaded PDFs. "
+                "This Knowledge Base only answers questions about your documents.\n\n"
+                "*Fix: Click Sync in the AWS Console, wait for it to finish, then ask a question "
+                "directly related to your documents.*"
             )
 
         citations = []
